@@ -182,15 +182,15 @@ const droneStations = [
 ];
 
 const hotspots: Array<{ id: string; label: string; coordinate: Coordinate; severity: number; category: string }> = [
-  { id: 'HS-101', label: 'Late-night transit cluster', coordinate: [74.855, 12.919], severity: 0.96, category: 'Transit' },
-  { id: 'HS-102', label: 'Unlit walkway reports', coordinate: [74.843, 12.929], severity: 0.72, category: 'Walkway' },
-  { id: 'HS-103', label: 'Market crowd pressure', coordinate: [74.862, 12.875], severity: 0.82, category: 'Market' },
-  { id: 'HS-104', label: 'Beach road watch zone', coordinate: [74.832, 12.907], severity: 0.64, category: 'Beach' },
-  { id: 'HS-105', label: 'Hostel return corridor', coordinate: [74.889, 12.923], severity: 0.77, category: 'Campus' },
-  { id: 'HS-106', label: 'Bus stop incident history', coordinate: [74.846, 12.894], severity: 0.88, category: 'Transit' },
-  { id: 'HS-107', label: 'Low visibility junction', coordinate: [74.871, 12.938], severity: 0.66, category: 'Junction' },
-  { id: 'HS-108', label: 'Rail approach cluster', coordinate: [74.835, 12.881], severity: 0.7, category: 'Transit' },
-  { id: 'HS-109', label: 'Ullal beach late reports', coordinate: [74.8608, 12.8054], severity: 0.85, category: 'Beach' }
+  { id: 'HS-101', label: 'Late-night transit cluster', coordinate: [74.855, 12.921], severity: 0.96, category: 'Transit' },       // on DRN-01 waypoint
+  { id: 'HS-102', label: 'Unlit walkway reports', coordinate: [74.843, 12.926], severity: 0.72, category: 'Walkway' },             // on DRN-01 waypoint
+  { id: 'HS-103', label: 'Market crowd pressure', coordinate: [74.860, 12.877], severity: 0.82, category: 'Market' },              // on DRN-02 segment [74.866,12.881]→[74.853,12.873]
+  { id: 'HS-104', label: 'Beach road watch zone', coordinate: [74.832, 12.908], severity: 0.64, category: 'Beach' },               // on DRN-03 segment [74.826,12.908]→[74.846,12.909]
+  { id: 'HS-105', label: 'Hostel return corridor', coordinate: [74.880, 12.907], severity: 0.77, category: 'Campus' },             // on DRN-04 waypoint
+  { id: 'HS-106', label: 'Bus stop incident history', coordinate: [74.846, 12.895], severity: 0.88, category: 'Transit' },         // on DRN-02 waypoint
+  { id: 'HS-107', label: 'Low visibility junction', coordinate: [74.891, 12.929], severity: 0.66, category: 'Junction' },          // on DRN-04 waypoint
+  { id: 'HS-108', label: 'Rail approach cluster', coordinate: [74.842, 12.882], severity: 0.7, category: 'Transit' },              // on DRN-02 waypoint
+  { id: 'HS-109', label: 'Ullal beach late reports', coordinate: [74.861, 12.795], severity: 0.85, category: 'Beach' }             // on DRN-05 waypoint
 ];
 
 const heatPoints = [
@@ -235,6 +235,14 @@ const demoBounds = {
 };
 
 const DETAIL_LAYER_MIN_ZOOM = 11.6;
+const ROUTE_LAYER_OPACITIES: Record<string, number> = {
+  'active-route-glow': 0.16,
+  'active-route': 0.9,
+  'safe-route-glow': 0.15,
+  'safe-route': 0.86
+};
+
+const ROUTE_FADE_DURATION = 0.8;
 
 function ensureLandCoordinate([lng, lat]: Coordinate): Coordinate {
   const safeLat = clamp(lat, demoBounds.south, demoBounds.north);
@@ -249,44 +257,42 @@ function ensureLandRoute(route: Coordinate[]) {
   return route.map(ensureLandCoordinate);
 }
 
-// Inject hotspots into the nearest drone's initial route using cheapest insertion
-hotspots.forEach((hotspot) => {
-  let nearestDrone = initialDrones[0];
-  let minDistance = Infinity;
-  
-  // Find which drone should cover this hotspot based on proximity to its station
-  initialDrones.forEach((drone) => {
-    const dist = turf.distance(turf.point(drone.position), turf.point(hotspot.coordinate));
-    if (dist < minDistance) {
-      minDistance = dist;
-      nearestDrone = drone;
-    }
-  });
+function setRouteLayerOpacity(map: MapLibreMap | null, layerId: string, opacity: number) {
+  if (!map || !map.getLayer(layerId)) return;
+  map.setPaintProperty(layerId, 'line-opacity', opacity);
+}
 
-  // Find the optimal segment in the drone's route to insert the hotspot
-  let insertIndex = 1;
-  let minAddedDistance = Infinity;
+function resetRouteLayerOpacities(map: MapLibreMap | null, layerIds: string[]) {
+  layerIds.forEach((layerId) => setRouteLayerOpacity(map, layerId, ROUTE_LAYER_OPACITIES[layerId] ?? 1));
+}
 
-  for (let i = 0; i < nearestDrone.route.length - 1; i++) {
-    const p1 = nearestDrone.route[i];
-    const p2 = nearestDrone.route[i + 1];
-    
-    const distToP1 = turf.distance(turf.point(p1), turf.point(hotspot.coordinate));
-    const distToP2 = turf.distance(turf.point(p2), turf.point(hotspot.coordinate));
-    const distP1toP2 = turf.distance(turf.point(p1), turf.point(p2));
-    
-    // The cost of inserting the hotspot between p1 and p2 is the detour distance
-    const addedDistance = distToP1 + distToP2 - distP1toP2;
-    
-    if (addedDistance < minAddedDistance) {
-      minAddedDistance = addedDistance;
-      insertIndex = i + 1;
-    }
+function fadeAndClearRoute(map: MapLibreMap | null, sourceId: string, layerIds: string[], onComplete?: () => void) {
+  if (!map) {
+    onComplete?.();
+    return;
   }
 
-  // Insert the hotspot into the route
-  nearestDrone.route.splice(insertIndex, 0, hotspot.coordinate);
-});
+  const fadeState = { value: 1 };
+  gsap.to(fadeState, {
+    value: 0,
+    duration: ROUTE_FADE_DURATION,
+    ease: 'power1.out',
+    onUpdate: () => {
+      layerIds.forEach((layerId) => {
+        const baseOpacity = ROUTE_LAYER_OPACITIES[layerId] ?? 1;
+        setRouteLayerOpacity(map, layerId, baseOpacity * fadeState.value);
+      });
+    },
+    onComplete: () => {
+      setSource(map, sourceId, emptyCollection);
+      resetRouteLayerOpacities(map, layerIds);
+      onComplete?.();
+    }
+  });
+}
+
+
+
 
 function coastlineGuardLongitude(lat: number) {
   if (lat >= 12.93) return 74.826;
@@ -425,7 +431,9 @@ function App() {
     if (!map) return;
 
     const syncPointVisibility = () => {
-      const visible = map.getZoom() >= DETAIL_LAYER_MIN_ZOOM ? 'visible' : 'none';
+      const zoom = map.getZoom();
+      const detailVisible = zoom >= DETAIL_LAYER_MIN_ZOOM ? 'visible' : 'none';
+      const droneVisible = zoom >= 10.8; // Drones linger slightly longer when zooming out
       [
         'patrol-routes',
         'safe-route-glow',
@@ -441,12 +449,11 @@ function App() {
         'safe-points',
         'unclustered-hotspot'
       ].forEach((layerId) => {
-        if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', visible);
+        if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', detailVisible);
       });
       droneMarkersRef.current.forEach((marker) => {
         const el = marker.getElement();
-        el.style.opacity = visible === 'visible' ? '1' : '0';
-        el.style.pointerEvents = visible === 'visible' ? 'auto' : 'none';
+        el.style.display = droneVisible ? 'block' : 'none';
       });
     };
 
@@ -503,7 +510,6 @@ function App() {
           });
         };
       }
-      pulseAt(coordinate);
     });
 
     map.on('click', 'drone-stations', (event) => {
@@ -514,7 +520,6 @@ function App() {
         .setLngLat(coordinate)
         .setHTML(`<strong>${feature.properties.name}</strong><span>Standby station for ${feature.properties.droneId}<br/>Responds to nearby SOS calls.</span>`)
         .addTo(map);
-      pulseAt(coordinate);
     });
 
     map.on('click', 'target-point', (event) => {
@@ -555,7 +560,6 @@ function App() {
           });
         };
       }
-      pulseAt(coordinate);
     });
 
     map.on('click', (event) => {
@@ -599,58 +603,77 @@ function App() {
     });
   }
 
+  function runPatrolLoop(drone: Drone, route: Coordinate[], startSegmentIndex: number, cycleDuration: number) {
+    const marker = droneMarkersRef.current.get(drone.id);
+    const safeRoute = ensureLandRoute(route);
+    if (safeRoute.length < 2) return;
+
+    const waypoints: Coordinate[] = [...safeRoute];
+    const first = waypoints[0];
+    const last = waypoints[waypoints.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1]) {
+      waypoints.push([first[0], first[1]]);
+    }
+
+    const segmentCount = waypoints.length - 1;
+    if (segmentCount < 1) return;
+
+    const segmentDistances = waypoints.slice(0, -1).map((point, index) => turf.distance(turf.point(point), turf.point(waypoints[index + 1]), { units: 'kilometers' }));
+    const totalDistance = segmentDistances.reduce((sum, value) => sum + value, 0);
+    if (totalDistance < 0.001) return;
+
+    const speed = totalDistance / cycleDuration;
+    let segmentIndex = ((startSegmentIndex % segmentCount) + segmentCount) % segmentCount;
+
+    const moveToSegment = () => {
+      const from = waypoints[segmentIndex];
+      const to = waypoints[segmentIndex + 1];
+      const distance = segmentDistances[segmentIndex];
+      const duration = distance / speed;
+      const heading = turf.bearing(turf.point(from), turf.point(to));
+      const progress = { value: 0 };
+
+      marker?.setLngLat(from);
+      marker?.setRotation(heading);
+
+      const tween = gsap.to(progress, {
+        value: 1,
+        duration,
+        ease: 'none',
+        onUpdate: () => {
+          const lng = from[0] + (to[0] - from[0]) * progress.value;
+          const lat = from[1] + (to[1] - from[1]) * progress.value;
+          const currentCoordinate = [lng, lat] as Coordinate;
+
+          marker?.setLngLat(currentCoordinate);
+          marker?.setRotation(heading);
+          setDrones((current) => current.map((item) => item.id === drone.id ? { ...item, position: currentCoordinate } : item));
+        },
+        onComplete: () => {
+          segmentIndex = (segmentIndex + 1) % segmentCount;
+          moveToSegment();
+        }
+      });
+
+      patrolTweensRef.current.set(drone.id, tween);
+    };
+
+    moveToSegment();
+  }
+
   function startPatrols(nextDrones: Drone[]) {
     nextDrones.forEach((drone, index) => {
       if (drone.status === 'Charging') return;
-      const safeRoute = ensureLandRoute(drone.route);
-      const line = turf.lineString(safeRoute);
-      const distance = turf.length(line, { units: 'kilometers' });
-      if (distance < 0.001) return;
-      
-      const startOffset = (index / nextDrones.length) * distance;
-      const startPos = turf.along(line, startOffset, { units: 'kilometers' }).geometry.coordinates as Coordinate;
-      const flyToStart = turf.lineString([drone.position, startPos]);
-      const flyDist = turf.length(flyToStart, { units: 'kilometers' });
-
-      function startLoop() {
-        const progress = { value: startOffset };
-        const tween = gsap.to(progress, {
-          value: startOffset + distance * 100, // Run for 100 laps
-          duration: (24 + index * 5) * 100,
-          ease: 'none',
-          onUpdate: () => {
-            const distAlongRoute = ((progress.value % distance) + distance) % distance;
-            const point = turf.along(line, distAlongRoute, { units: 'kilometers' });
-            updateDronePosition(drone.id, point.geometry.coordinates as Coordinate);
-          }
-        });
-        patrolTweensRef.current.set(drone.id, tween);
-      }
-
-      if (flyDist > 0.05) {
-        const flyProgress = { value: 0 };
-        const flyTween = gsap.to(flyProgress, {
-          value: 1,
-          duration: Math.max(2, flyDist * 2.5),
-          ease: 'power1.inOut',
-          onUpdate: () => {
-            const pt = turf.along(flyToStart, flyProgress.value * flyDist, { units: 'kilometers' });
-            updateDronePosition(drone.id, pt.geometry.coordinates as Coordinate);
-          },
-          onComplete: startLoop
-        });
-        patrolTweensRef.current.set(drone.id, flyTween);
-      } else {
-        startLoop();
-      }
+      const baseDuration = 24 + index * 5;
+      runPatrolLoop(drone, drone.route, index, baseDuration);
     });
   }
 
-  function updateDronePosition(droneId: string, coordinate: Coordinate): Coordinate {
-    const safeCoordinate = ensureLandCoordinate(coordinate);
-    droneMarkersRef.current.get(droneId)?.setLngLat(safeCoordinate);
-    setDrones((current) => current.map((drone) => drone.id === droneId ? { ...drone, position: safeCoordinate } : drone));
-    return safeCoordinate;
+  function updateDronePosition(droneId: string, coordinate: Coordinate, clampToLand = true): Coordinate {
+    const nextCoordinate = clampToLand ? ensureLandCoordinate(coordinate) : coordinate;
+    droneMarkersRef.current.get(droneId)?.setLngLat(nextCoordinate);
+    setDrones((current) => current.map((drone) => drone.id === droneId ? { ...drone, position: nextCoordinate } : drone));
+    return nextCoordinate;
   }
 
   function beginSosSequence(alert: Alert, showPostArrivalBanners = false) {
@@ -672,7 +695,6 @@ function App() {
     setToast(`${nearest.id} dispatched to ${nextAlert.id}`);
     dispatchDrone(nearest.id, target, 'Dispatching', showPostArrivalBanners);
     setSosTargetVisible(true);
-    pulseAt(target);
   }
 
   function runSosDemo() {
@@ -716,6 +738,7 @@ function App() {
     const route = createCurvedRoute(safePosition, safeTarget);
     const routeLine = turf.lineString(route, { droneId, target: status });
     const distance = turf.length(routeLine, { units: 'kilometers' });
+    resetRouteLayerOpacities(map, ['active-route-glow', 'active-route']);
     setSource(map, sources.activeRoute, featureCollection([])); // Start empty so it draws dynamically
     fitCollections(map, [featureCollection([routeLine])]);
 
@@ -732,7 +755,7 @@ function App() {
         const currentDist = distance * progress.value;
         const point = turf.along(routeLine, currentDist, { units: 'kilometers' });
         const currentCoord = point.geometry.coordinates as Coordinate;
-        updateDronePosition(droneId, currentCoord);
+        updateDronePosition(droneId, currentCoord, false);
         setRouteProgress(progress.value);
 
         if (currentDist > 0.001) {
@@ -752,39 +775,41 @@ function App() {
         setTimeline((current) => [{ time: 'Now', label: `${droneId} arrived`, detail: 'Drone is holding position over target.' }, ...current].slice(0, 8));
         setToast(`${droneId} arrived at target`);
 
-        // Start circling the target
-        const circleRadiusKm = 0.12; // 120 meters
-        const circlePolygon = turf.circle(safeTarget, circleRadiusKm, { steps: 36, units: 'kilometers' });
-        const circleCoords = circlePolygon.geometry.coordinates[0] as Coordinate[];
-        const circleLine = turf.lineString(ensureLandRoute(circleCoords), { type: 'orbit' });
-        const circleDistance = turf.length(circleLine, { units: 'kilometers' });
+        fadeAndClearRoute(map, sources.activeRoute, ['active-route-glow', 'active-route'], () => {
+          // Start circling the target
+          const circleRadiusKm = 0.12; // 120 meters
+          const circlePolygon = turf.circle(safeTarget, circleRadiusKm, { steps: 36, units: 'kilometers' });
+          const circleCoords = circlePolygon.geometry.coordinates[0] as Coordinate[];
+          const circleLine = turf.lineString(ensureLandRoute(circleCoords), { type: 'orbit' });
+          const circleDistance = turf.length(circleLine, { units: 'kilometers' });
 
-        // Transition from caller center to the orbit path smoothly
-        const transitionRoute = turf.lineString([safeTarget, circleCoords[0]]);
-        const transitionDist = turf.length(transitionRoute, { units: 'kilometers' });
-        
-        const transitionProgress = { value: 0 };
-        dispatchTweenRef.current = gsap.to(transitionProgress, {
-          value: 1,
-          duration: 2.5,
-          ease: 'power1.inOut',
-          onUpdate: () => {
-            const point = turf.along(transitionRoute, transitionProgress.value * transitionDist, { units: 'kilometers' });
-            updateDronePosition(droneId, point.geometry.coordinates as Coordinate);
-          },
-          onComplete: () => {
-            const circleProgress = { value: 0 };
-            dispatchTweenRef.current = gsap.to(circleProgress, {
-              value: 1,
-              duration: 10, // Faster orbit
-              repeat: -1,
-              ease: 'none',
-              onUpdate: () => {
-                const point = turf.along(circleLine, (circleProgress.value % 1) * circleDistance, { units: 'kilometers' });
-                updateDronePosition(droneId, point.geometry.coordinates as Coordinate);
-              }
-            });
-          }
+          // Transition from caller center to the orbit path smoothly
+          const transitionRoute = turf.lineString([safeTarget, circleCoords[0]]);
+          const transitionDist = turf.length(transitionRoute, { units: 'kilometers' });
+
+          const transitionProgress = { value: 0 };
+          dispatchTweenRef.current = gsap.to(transitionProgress, {
+            value: 1,
+            duration: 2.5,
+            ease: 'power1.inOut',
+            onUpdate: () => {
+              const point = turf.along(transitionRoute, transitionProgress.value * transitionDist, { units: 'kilometers' });
+              updateDronePosition(droneId, point.geometry.coordinates as Coordinate, false);
+            },
+            onComplete: () => {
+              const circleProgress = { value: 0 };
+              dispatchTweenRef.current = gsap.to(circleProgress, {
+                value: 1,
+                duration: 10, // Faster orbit
+                repeat: -1,
+                ease: 'none',
+                onUpdate: () => {
+                  const point = turf.along(circleLine, (circleProgress.value % 1) * circleDistance, { units: 'kilometers' });
+                  updateDronePosition(droneId, point.geometry.coordinates as Coordinate, false);
+                }
+              });
+            }
+          });
         });
 
         if (showPostArrivalBanners) {
@@ -844,6 +869,7 @@ function App() {
     if (!map) return;
     const route = createCurvedRoute(user.origin, user.destination);
     const routeLine = turf.lineString(route, { type: 'Safe Walk' });
+    resetRouteLayerOpacities(map, ['safe-route-glow', 'safe-route']);
     setSource(map, sources.safeRoute, featureCollection([routeLine]));
     setSource(map, sources.safeUser, featureCollection([turf.point(user.origin, { label: `${user.name}'s position` })]));
     setSource(map, sources.safePoints, featureCollection([
@@ -883,6 +909,7 @@ function App() {
     const userRoute = createCurvedRoute(user.origin, user.destination);
     const userRouteLine = turf.lineString(userRoute, { type: 'Safe Walk' });
     const userRouteDistance = turf.length(userRouteLine, { units: 'kilometers' });
+    resetRouteLayerOpacities(map, ['safe-route-glow', 'safe-route']);
 
     // Phase 1: Drone flies from station to user's origin
     const pickupRoute = turf.lineString(createCurvedRoute(stationCoord, user.origin), { droneId: nearest.id, mode: 'pickup' });
@@ -907,7 +934,7 @@ function App() {
         const point = turf.along(pickupRoute, currentDist, { units: 'kilometers' });
         const currentCoord = point.geometry.coordinates as Coordinate;
         
-        updateDronePosition(nearest.id, currentCoord);
+        updateDronePosition(nearest.id, currentCoord, false);
         setSafeWalkUsers((prev) => prev.map((u) => u.id === userId ? { ...u, progress: pickupProgress.value * 0.15 } : u));
         setRouteProgress(pickupProgress.value * 0.15);
       },
@@ -933,7 +960,7 @@ function App() {
             const droneCoord = offsetEscortCoordinate(userCoord);
             
             setSource(map, sources.safeUser, featureCollection([turf.point(userCoord, { label: `${user.name}'s position` })]));
-            updateDronePosition(nearest.id, droneCoord);
+            updateDronePosition(nearest.id, droneCoord, false);
             setSafeWalkUsers((prev) => prev.map((u) => u.id === userId ? { ...u, progress: 0.15 + escortProgress.value * 0.7 } : u));
             setRouteProgress(0.15 + escortProgress.value * 0.7);
           },
@@ -966,7 +993,7 @@ function App() {
                   const point = turf.along(returnRoute, currentDist, { units: 'kilometers' });
                   const currentCoord = point.geometry.coordinates as Coordinate;
                   
-                  updateDronePosition(nearest.id, currentCoord);
+                  updateDronePosition(nearest.id, currentCoord, false);
                   setSafeWalkUsers((prev) => prev.map((u) => u.id === userId ? { ...u, progress: 0.85 + returnProgress.value * 0.15 } : u));
                   setRouteProgress(0.85 + returnProgress.value * 0.15);
                 },
@@ -975,52 +1002,40 @@ function App() {
                   setSafeWalkUsers((prev) => prev.map((u) => u.id === userId ? { ...u, status: 'complete', progress: 1 } : u));
                   setDrones((current) => current.map((d) => d.id === nearest.id ? { ...d, status: 'Patrol', response: 'complete' } : d));
                   setSafeWalk((current) => ({ ...current, status: 'Escort complete' }));
-                  setSource(map, sources.activeRoute, emptyCollection);
                   setTimeline((current) => [{ time: 'Now', label: `${nearest.id} at station`, detail: 'Drone returned and resuming patrol.' }, ...current].slice(0, 8));
                   setToast(`${nearest.id} returned to station`);
-                  // Restart patrol
-                  const droneData = initialDrones.find((d) => d.id === nearest.id);
-                  if (droneData) {
-                    patrolTweensRef.current.get(nearest.id)?.kill();
-                    const safeRoute = ensureLandRoute(droneData.route);
-                    const line = turf.lineString(safeRoute);
-                    const dist = turf.length(line, { units: 'kilometers' });
-                    
-                    const flyToStart = turf.lineString([stationCoord, safeRoute[0]]);
-                    const flyDist = turf.length(flyToStart, { units: 'kilometers' });
+                  fadeAndClearRoute(map, sources.safeRoute, ['safe-route-glow', 'safe-route'], () => {
+                    // Restart patrol
+                    const droneData = initialDrones.find((d) => d.id === nearest.id);
+                    if (droneData) {
+                      patrolTweensRef.current.get(nearest.id)?.kill();
+                      const safeRoute = ensureLandRoute(droneData.route);
 
-                    function startLoop() {
-                      const progress = { value: 0 };
-                      const tween = gsap.to(progress, {
-                        value: dist * 100,
-                        duration: 24 * 100,
-                        ease: 'none',
-                        onUpdate: () => {
-                          const distAlongRoute = ((progress.value % dist) + dist) % dist;
-                          const pt = turf.along(line, distAlongRoute, { units: 'kilometers' });
-                          updateDronePosition(nearest.id, pt.geometry.coordinates as Coordinate);
-                        }
-                      });
-                      patrolTweensRef.current.set(nearest.id, tween);
-                    }
+                      const flyToStart = turf.lineString([stationCoord, safeRoute[0]]);
+                      const flyDist = turf.length(flyToStart, { units: 'kilometers' });
 
-                    if (flyDist > 0.05) {
-                      const flyProgress = { value: 0 };
-                      const flyTween = gsap.to(flyProgress, {
-                        value: 1,
-                        duration: Math.max(2, flyDist * 2.5),
-                        ease: 'power1.inOut',
-                        onUpdate: () => {
-                          const pt = turf.along(flyToStart, flyProgress.value * flyDist, { units: 'kilometers' });
-                          updateDronePosition(nearest.id, pt.geometry.coordinates as Coordinate);
-                        },
-                        onComplete: startLoop
-                      });
-                      patrolTweensRef.current.set(nearest.id, flyTween);
-                    } else {
-                      startLoop();
+                      if (flyDist > 0.05) {
+                        const flyProgress = { value: 0 };
+                        const flyTween = gsap.to(flyProgress, {
+                          value: 1,
+                          duration: Math.max(2, flyDist * 2.5),
+                          ease: 'power1.inOut',
+                          onUpdate: () => {
+                            const pt = turf.along(flyToStart, flyProgress.value * flyDist, { units: 'kilometers' });
+                            updateDronePosition(nearest.id, pt.geometry.coordinates as Coordinate, false);
+                          },
+                          onComplete: () => {
+                            const patrolIndex = Math.max(0, initialDrones.findIndex((d) => d.id === nearest.id));
+                            runPatrolLoop(droneData, safeRoute, patrolIndex, 24 + patrolIndex * 5);
+                          }
+                        });
+                        patrolTweensRef.current.set(nearest.id, flyTween);
+                      } else {
+                        const patrolIndex = Math.max(0, initialDrones.findIndex((d) => d.id === nearest.id));
+                        runPatrolLoop(droneData, safeRoute, patrolIndex, 24 + patrolIndex * 5);
+                      }
                     }
-                  }
+                  });
                 }
               });
               safeWalkTweensRef.current.set(userId, returnTween);
@@ -1042,6 +1057,7 @@ function App() {
     const distance = turf.length(routeLine, { units: 'kilometers' });
     const nearest = getNearestDrone(safeOrigin);
     const map = mapRef.current;
+    resetRouteLayerOpacities(map, ['safe-route-glow', 'safe-route']);
     setSource(map, sources.safeRoute, featureCollection([routeLine]));
     setSource(map, sources.safeUser, featureCollection([turf.point(safeOrigin, { label: 'User live position' })]));
     setSource(map, sources.safePoints, featureCollection([
@@ -1083,7 +1099,7 @@ function App() {
       },
       onUpdate: () => {
         const point = turf.along(dispatchRoute, dispatchDistance * pickupProgress.value, { units: 'kilometers' });
-        updateDronePosition(droneId, point.geometry.coordinates as Coordinate);
+        updateDronePosition(droneId, point.geometry.coordinates as Coordinate, false);
         setRouteProgress(pickupProgress.value * 0.35);
       },
       onComplete: () => {
@@ -1101,7 +1117,7 @@ function App() {
             const userCoordinate = ensureLandCoordinate(userPoint.geometry.coordinates as Coordinate);
             const droneCoordinate = offsetEscortCoordinate(userCoordinate);
             setSource(map, sources.safeUser, featureCollection([turf.point(userCoordinate, { label: 'User live position' })]));
-            updateDronePosition(droneId, droneCoordinate);
+            updateDronePosition(droneId, droneCoordinate, false);
             setRouteProgress(0.35 + escortProgress.value * 0.65);
           },
           onComplete: () => {
@@ -1115,16 +1131,6 @@ function App() {
         });
       }
     });
-  }
-
-  function pulseAt(coordinate: Coordinate) {
-    const map = mapRef.current;
-    if (!map) return;
-    const safeCoordinate = ensureLandCoordinate(coordinate);
-    const node = document.createElement('div');
-    node.className = 'click-pulse';
-    const marker = new maplibregl.Marker({ element: node }).setLngLat(safeCoordinate).addTo(map);
-    gsap.fromTo(node, { scale: 0.35, opacity: 1 }, { scale: 3.2, opacity: 0, duration: 1.2, ease: 'power2.out', onComplete: () => marker.remove() });
   }
 
   return (
