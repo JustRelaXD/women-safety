@@ -111,7 +111,24 @@ function syncDroneMarkerAppearance(marker: maplibregl.Marker, drone: Drone) {
 
 function syncDroneMarkerHeading(marker: maplibregl.Marker, heading: number) {
   const element = marker.getElement() as HTMLButtonElement;
-  element.style.setProperty('--drone-heading', `${heading}deg`);
+  element.dataset.heading = `${heading.toFixed(2)}`;
+}
+
+function sanitizeDroneAnimationData(animationData: typeof droneAnimationData) {
+  const clone = JSON.parse(JSON.stringify(animationData)) as typeof droneAnimationData;
+  const rootLayer = clone.layers?.[0];
+  if (rootLayer?.ks) {
+    if (rootLayer.ks.p?.a === 1) {
+      rootLayer.ks.p = { a: 0, k: [540, 504, 0], ix: 2 } as unknown as typeof rootLayer.ks.p;
+    }
+    if (rootLayer.ks.r?.a === 1) {
+      rootLayer.ks.r = { a: 0, k: 0, ix: 10 } as unknown as typeof rootLayer.ks.r;
+    }
+    if (rootLayer.ks.s?.a === 1) {
+      rootLayer.ks.s = { a: 0, k: [600, 600, 100], ix: 6 } as unknown as typeof rootLayer.ks.s;
+    }
+  }
+  return clone;
 }
 
 const lightOsmStyle: maplibregl.StyleSpecification = {
@@ -357,6 +374,7 @@ function App() {
   const [sosRunning, setSosRunning] = useState(false);
   const [activeSosId, setActiveSosId] = useState<string | null>(null);
   const sosBannerTimersRef = useRef<number[]>([]);
+  const droneAnimationFrameData = useMemo(() => sanitizeDroneAnimationData(droneAnimationData), []);
   const [safeWalkUsers, setSafeWalkUsers] = useState<SafeWalkUser[]>(() => seededSafeWalkUsers.map((u) => ({ ...u, origin: ensureLandCoordinate(u.origin), destination: ensureLandCoordinate(u.destination) })));
   const [selectedSafeWalkUserId, setSelectedSafeWalkUserId] = useState<string | null>(null);
   const safeWalkTweensRef = useRef(new globalThis.Map<string, gsap.core.Tween>());
@@ -632,7 +650,8 @@ function App() {
         element: markerNode,
         anchor: 'center',
         pitchAlignment: 'map',
-        rotationAlignment: 'map'
+        rotationAlignment: 'map',
+        subpixelPositioning: true
       })
         .setLngLat(ensureLandCoordinate(drone.position))
         .addTo(map);
@@ -641,9 +660,9 @@ function App() {
         renderer: 'svg',
         loop: true,
         autoplay: true,
-        animationData: droneAnimationData,
+        animationData: droneAnimationFrameData,
         rendererSettings: {
-          preserveAspectRatio: 'xMidYMid meet'
+          preserveAspectRatio: 'xMidYMid slice'
         }
       });
       syncDroneMarkerAppearance(marker, drone);
@@ -684,7 +703,6 @@ function App() {
       const progress = { value: 0 };
 
       marker?.setLngLat(from);
-      marker?.setRotation(heading);
       if (marker) syncDroneMarkerHeading(marker, heading);
 
       const tween = gsap.to(progress, {
@@ -697,7 +715,6 @@ function App() {
           const currentCoordinate = [lng, lat] as Coordinate;
 
           marker?.setLngLat(currentCoordinate);
-          marker?.setRotation(heading);
           if (marker) syncDroneMarkerHeading(marker, heading);
           setDrones((current) => current.map((item) => item.id === drone.id ? { ...item, position: currentCoordinate } : item));
         },
