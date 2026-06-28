@@ -473,22 +473,39 @@ p {
 
 .drone-marker {
   position: relative;
-  display: block;
-  width: 18px;
-  height: 18px;
-  border: 2px solid #f8fafc;
-  border-radius: 50%;
-  background: #020617;
-  box-shadow:
-    0 0 0 5px rgba(8, 145, 178, 0.16),
-    0 8px 20px rgba(15, 23, 42, 0.28);
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+  overflow: visible;
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--drone-accent, #f8fafc) 42%, transparent));
 }
 
-.drone-marker span {
+.drone-marker:focus-visible {
+  outline: none;
+}
+
+.drone-graphic {
   position: absolute;
-  inset: 4px;
-  border-radius: inherit;
-  background: #050505;
+  inset: 0;
+  display: block;
+  transform: rotate(calc(var(--drone-heading, 0deg) * -1));
+  transform-origin: center;
+  filter: drop-shadow(0 10px 22px rgba(15, 23, 42, 0.32));
+  pointer-events: none;
+}
+
+.drone-graphic svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
 }
 
 .click-pulse {
@@ -776,3 +793,5 @@ p {
   background: linear-gradient(90deg, #2563eb, #059669);
   transition: width 0.3s ease;
 }
+
+.hidden-marker { display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; }

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { AnimatePresence, motion } from 'framer-motion';
 import maplibregl, { GeoJSONSource, LngLatBounds, Map as MapLibreMap } from 'maplibre-gl';
 import { gsap } from 'gsap';
+import lottie from 'lottie-web';
 import * as turf from '@turf/turf';
 import {
   Activity,
@@ -22,6 +23,7 @@ import {
 } from 'lucide-react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './styles.css';
+import droneAnimationData from '../animation/UAV Technology.json';
 
 type FeatureCollection = GeoJSON.FeatureCollection<GeoJSON.Geometry, Record<string, unknown>>;
 type PointFeature = GeoJSON.Feature<GeoJSON.Point, Record<string, unknown>>;
@@ -74,6 +76,7 @@ type TimelineEvent = {
 };
 
 type NavView = 'dashboard' | 'sos' | 'safewalk' | 'about';
+type LottieAnimation = ReturnType<typeof lottie.loadAnimation>;
 
 const emptyCollection: FeatureCollection = { type: 'FeatureCollection', features: [] };
 const center: Coordinate = [74.856, 12.914];
@@ -89,6 +92,27 @@ const sources = {
   safePoints: 'safePoints',
   riskHeatmap: 'riskHeatmap'
 };
+
+const droneAccentColors: Record<Drone['status'], string> = {
+  Patrol: '#f8fafc',
+  Dispatching: '#22d3ee',
+  Monitoring: '#a78bfa',
+  Charging: '#f59e0b'
+};
+
+function getDroneAccentColor(drone: Drone) {
+  return droneAccentColors[drone.status];
+}
+
+function syncDroneMarkerAppearance(marker: maplibregl.Marker, drone: Drone) {
+  const element = marker.getElement() as HTMLButtonElement;
+  element.style.setProperty('--drone-accent', getDroneAccentColor(drone));
+}
+
+function syncDroneMarkerHeading(marker: maplibregl.Marker, heading: number) {
+  const element = marker.getElement() as HTMLButtonElement;
+  element.style.setProperty('--drone-heading', `${heading}deg`);
+}
 
 const lightOsmStyle: maplibregl.StyleSpecification = {
   version: 8,
@@ -309,6 +333,7 @@ function App() {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const droneMarkersRef = useRef(new globalThis.Map<string, maplibregl.Marker>());
+  const droneAnimationsRef = useRef(new globalThis.Map<string, LottieAnimation>());
   const patrolTweensRef = useRef(new globalThis.Map<string, gsap.core.Tween>());
   const dispatchTweenRef = useRef<gsap.core.Tween | null>(null);
   const liveTickerRef = useRef(0);
@@ -392,6 +417,8 @@ function App() {
     return () => {
       patrolTweensRef.current.forEach((tween) => tween.kill());
       dispatchTweenRef.current?.kill();
+      droneAnimationsRef.current.forEach((animation) => animation.destroy());
+      droneAnimationsRef.current.clear();
       droneMarkersRef.current.forEach((marker) => marker.remove());
       map.remove();
       mapRef.current = null;
@@ -427,6 +454,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    drones.forEach((drone) => {
+      const marker = droneMarkersRef.current.get(drone.id);
+      if (!marker) return;
+      syncDroneMarkerAppearance(marker, drone);
+    });
+  }, [drones]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
@@ -453,7 +488,7 @@ function App() {
       });
       droneMarkersRef.current.forEach((marker) => {
         const el = marker.getElement();
-        el.style.display = droneVisible ? 'block' : 'none';
+        el.classList.toggle('hidden-marker', !droneVisible);
       });
     };
 
@@ -584,7 +619,9 @@ function App() {
       markerNode.className = 'drone-marker';
       markerNode.type = 'button';
       markerNode.title = `${drone.id} ${drone.label}`;
-      markerNode.innerHTML = '<span></span>';
+      const animationNode = document.createElement('div');
+      animationNode.className = 'drone-graphic';
+      markerNode.appendChild(animationNode);
       markerNode.addEventListener('click', () => {
         new maplibregl.Popup({ className: 'ops-popup', offset: 18 })
           .setLngLat(ensureLandCoordinate(drone.position))
@@ -599,6 +636,19 @@ function App() {
       })
         .setLngLat(ensureLandCoordinate(drone.position))
         .addTo(map);
+      const animation = lottie.loadAnimation({
+        container: animationNode,
+        renderer: 'svg',
+        loop: true,
+        autoplay: true,
+        animationData: droneAnimationData,
+        rendererSettings: {
+          preserveAspectRatio: 'xMidYMid meet'
+        }
+      });
+      syncDroneMarkerAppearance(marker, drone);
+      syncDroneMarkerHeading(marker, 0);
+      droneAnimationsRef.current.set(drone.id, animation);
       droneMarkersRef.current.set(drone.id, marker);
     });
   }
@@ -635,6 +685,7 @@ function App() {
 
       marker?.setLngLat(from);
       marker?.setRotation(heading);
+      if (marker) syncDroneMarkerHeading(marker, heading);
 
       const tween = gsap.to(progress, {
         value: 1,
@@ -647,6 +698,7 @@ function App() {
 
           marker?.setLngLat(currentCoordinate);
           marker?.setRotation(heading);
+          if (marker) syncDroneMarkerHeading(marker, heading);
           setDrones((current) => current.map((item) => item.id === drone.id ? { ...item, position: currentCoordinate } : item));
         },
         onComplete: () => {
